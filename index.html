@@ -505,14 +505,31 @@ function updateBall(dt) {
   } else if (ballState === 'shooting') {
     ballX += ballVX * dt;
     ballY += ballVY * dt;
-    // Slight arc (gravity feel)
     ballVY += 180 * dt;
     ballRot += 8 * dt;
-    // Check if reached goal zone
+
     const nt = H*0.085, nb = nt + H*0.22;
     const nl = (W - W*0.62)/2, nr = nl + W*0.62;
+
+    // GK collision check — save if ball gets close to GK body
+    const sc = Math.min(W,H)/380;
+    const gkBodyW = 38*sc, gkBodyH = 80*sc;
+    const gkLeft = gkX - gkBodyW/2;
+    const gkRight = gkX + gkBodyW/2;
+    const gkTop = gkY - gkBodyH/2;
+    const gkBottom = gkY + gkBodyH/2;
+    const inGK = ballX > gkLeft - ballR && ballX < gkRight + ballR
+              && ballY > gkTop  - ballR && ballY < gkBottom + ballR;
+
+    if (inGK && !gkDazzled) {
+      // SAVED — GK blocks the shot
+      showSavePop();
+      resetBall();
+      return;
+    }
+
+    // Goal zone reached without hitting GK → GOAL
     if (ballY < nb + ballR*2 && ballX > nl && ballX < nr) {
-      // GOAL!
       ballState = 'goal';
       ballGoalTimer = 1.4;
       goalFlash = 1.0;
@@ -521,12 +538,12 @@ function updateBall(dt) {
       scoreEl.textContent = score;
       showGoalPop();
     }
+
     // Out of bounds
     if (ballY < -ballR*3 || ballX < -ballR*3 || ballX > W+ballR*3) {
       resetBall();
     }
   } else if (ballState === 'goal') {
-    // Ball continues into net slowly
     ballX += ballVX * 0.12 * dt;
     ballY += ballVY * 0.12 * dt;
     ballRot += 3 * dt;
@@ -569,6 +586,15 @@ function showGoalPop() {
   comboPop.style.opacity = '1';
   clearTimeout(comboPop._t);
   comboPop._t = setTimeout(() => comboPop.style.opacity='0', 900);
+}
+
+function showSavePop() {
+  comboPop.textContent = '🧤 SAVED!';
+  comboPop.style.color = '#ff6644';
+  comboPop.style.textShadow = '0 0 18px #ff4422';
+  comboPop.style.opacity = '1';
+  clearTimeout(comboPop._t);
+  comboPop._t = setTimeout(() => comboPop.style.opacity='0', 700);
 }
 
 function drawBall() {
