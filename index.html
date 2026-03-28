@@ -739,25 +739,41 @@ function updateGK(dt) {
 }
 
 // ── HIT DETECTION ────────────────────────────────────
-function checkHit() {
-  if(laserX<-900) return;
+let holdScoreAccum = 0;
+function checkHit(dt) {
+  if(laserX<-900){ holdScoreAccum=0; return; }
   const sc=Math.min(W,H)/380;
   const headR=18*sc, bodyH=48*sc;
   const eyeX=gkX, eyeY=gkY-bodyH/2-headR*0.88;
   const dx=laserX-eyeX, dy=laserY-eyeY;
   const dist=Math.sqrt(dx*dx+dy*dy);
-  if(dist<headR*1.3&&!gkDazzled){
-    gkDazzled=true; dazzleT=1.9;
-    combo++; maxCombo=Math.max(maxCombo,combo);
-    const pts=10*combo; score+=pts;
-    scoreEl.textContent=score; comboEl.textContent=combo;
-    flash.style.opacity='1'; setTimeout(()=>flash.style.opacity='0',110);
-    comboPop.textContent=combo>=3?`${combo}x COMBO! +${pts}`:`HIT! +${pts}`;
-    comboPop.style.opacity='1';
-    clearTimeout(comboPop._t);
-    comboPop._t=setTimeout(()=>comboPop.style.opacity='0',700);
-  } else if(dist>=headR*1.3){
-    combo=0; comboEl.textContent=0;
+
+  if(dist<headR*1.3){
+    if(!gkDazzled){
+      // 初接触 — コンボ＆ダメージ
+      gkDazzled=true; dazzleT=1.9;
+      combo++; maxCombo=Math.max(maxCombo,combo);
+      const pts=10*combo; score+=pts;
+      scoreEl.textContent=score; comboEl.textContent=combo;
+      flash.style.opacity='1'; setTimeout(()=>flash.style.opacity='0',110);
+      comboPop.textContent=combo>=3?`${combo}x COMBO! +${pts}`:`HIT! +${pts}`;
+      comboPop.style.color='#00ff88'; comboPop.style.textShadow='0 0 18px #00ff88';
+      comboPop.style.opacity='1';
+      clearTimeout(comboPop._t);
+      comboPop._t=setTimeout(()=>comboPop.style.opacity='0',700);
+    } else {
+      // 照射継続中 — 40pt/秒を加算、dazzleをリセット延長
+      holdScoreAccum += 40 * dt;
+      dazzleT = Math.max(dazzleT, 0.35);
+      if(holdScoreAccum >= 1){
+        const add = Math.floor(holdScoreAccum);
+        holdScoreAccum -= add;
+        score += add;
+        scoreEl.textContent = score;
+      }
+    }
+  } else {
+    combo=0; comboEl.textContent=0; holdScoreAccum=0;
   }
 }
 
@@ -768,7 +784,7 @@ function loop(ts){
   const dt=Math.min((ts-lastT)/1000,0.1); lastT=ts;
   ctx.clearRect(0,0,W,H);
   drawStadium(); drawLaserBeam(); drawGK(); drawBall();
-  updateGK(dt); updateBall(dt); checkHit();
+  updateGK(dt); updateBall(dt); checkHit(dt);
   animFrame=requestAnimationFrame(loop);
 }
 
