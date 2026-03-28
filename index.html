@@ -98,6 +98,19 @@ let gkState='idle', gkDiveDir=1, gkDiveP=0;
 let gkDazzled=false, dazzleT=0;
 let gkFeintDir=1, gkFeintT=0, gkPhase=0;
 
+// ── GUARD STATE ───────────────────────────────────────
+// Phases: 'off' → 'warning' (3s照射で警告) → 'approaching' (歩いてくる) → 'grabbing' (減点中) → 'leaving' (退場)
+let guardState = 'off';
+let continuousHitTime = 0;   // レーザーを当て続けた累計秒数
+let guardX, guardY;          // 警備員の現在位置
+let guardTargetX, guardTargetY; // 目標位置
+let guardWalkT = 0;          // 歩行アニメ用
+let guardWarningT = 0;       // 警告表示タイマー
+let guardGrabT = 0;          // 掴んでいる時間
+let guardLeaveT = 0;         // 退場タイマー
+let guardPenaltyAccum = 0;   // 減点蓄積
+let guardAlerted = false;    // 一度警告が出たか
+
 function resize() {
   W = canvas.offsetWidth; H = canvas.offsetHeight;
   canvas.width = W; canvas.height = H;
@@ -738,10 +751,195 @@ function updateGK(dt) {
   }
 }
 
+// ── GUARD LOGIC ──────────────────────────────────────
+function initGuard() {
+  guardState = 'off'; continuousHitTime = 0;
+  guardX = laserSrcX; guardY = laserSrcY;
+  guardAlerted = false; guardPenaltyAccum = 0;
+}
+
+function updateGuard(dt, isHitting) {
+  if (guardState === 'off') {
+    if (isHitting) {
+      continuousHitTime += dt;
+      if (continuousHitTime >= 3.0 && !guardAlerted) {
+        // 3秒当て続けたら警告→警備員登場
+        guardState = 'warning';
+        guardWarningT = 1.5;
+        guardAlerted = true;
+        guardX = laserSrcX + (Math.random()<0.5?-60:60);
+        guardY = laserSrcY - 10;
+      }
+    } else {
+      continuousHitTime = Math.max(0, continuousHitTime - dt*1.5); // 外したら減衰
+    }
+  } else if (guardState === 'warning') {
+    guardWarningT -= dt;
+    if (guardWarningT <= 0) {
+      guardState = 'approaching';
+      // 警備員がレーザー照射元（観客席右上）からプレイヤーへ向かう
+      guardTargetX = laserSrcX - 40;
+      guardTargetY = laserSrcY - 20;
+    }
+  } else if (guardState === 'approaching') {
+    guardWalkT += dt;
+    const dx = guardTargetX - guardX;
+    const dy = guardTargetY - guardY;
+    const dist = Math.sqrt(dx*dx+dy*dy);
+    if (dist > 8) {
+      const spd = 120;
+      guardX += (dx/dist)*spd*dt;
+      guardY += (dy/dist)*spd*dt;
+    } else {
+      // 到着 → 掴む
+      guardState = 'grabbing';
+      guardGrabT = 0;
+    }
+  } else if (guardState === 'grabbing') {
+    guardGrabT += dt;
+    guardWalkT += dt;
+    // 減点: 50pt/秒
+    if (isHitting) {
+      guardPenaltyAccum += 50 * dt;
+      if (guardPenaltyAccum >= 1) {
+        const sub = Math.floor(guardPenaltyAccum);
+        guardPenaltyAccum -= sub;
+        score = Math.max(0, score - sub);
+        scoreEl.textContent = score;
+      }
+    }
+    // レーザーを3秒離したら警備員が退場
+    if (!isHitting) {
+      continuousHitTime = Math.max(0, continuousHitTime - dt*2);
+      if (continuousHitTime <= 0) {
+        guardState = 'leaving';
+        guardLeaveT = 1.5;
+      }
+    } else {
+      continuousHitTime = 4; // 当て続けてる間はリセットさせない
+    }
+  } else if (guardState === 'leaving') {
+    guardWalkT += dt;
+    guardLeaveT -= dt;
+    // ゆっくり元の位置へ戻る
+    const dx = laserSrcX - guardX, dy = laserSrcY - guardY;
+    const dist = Math.sqrt(dx*dx+dy*dy);
+    if (dist > 5) { guardX += (dx/dist)*80*dt; guardY += (dy/dist)*80*dt; }
+    if (guardLeaveT <= 0) {
+      guardState = 'off';
+      guardAlerted = false;
+      continuousHitTime = 0;
+    }
+  }
+}
+
+function drawGuard() {
+  if (guardState === 'off') return;
+
+  const sc = Math.min(W,H)/380;
+  const x = guardX, y = guardY;
+  const alpha = guardState==='warning' ? 0.5 + Math.sin(Date.now()/80)*0.5 : 1.0;
+  ctx.save();
+  ctx.globalAlpha = Math.max(0.3, alpha);
+  ctx.translate(x, y);
+
+  const bh=44*sc, bw=24*sc, hr=15*sc;
+  const walkBob = Math.sin(guardWalkT*8)*3*sc;
+
+  // Shadow
+  ctx.fillStyle='rgba(0,0,0,0.2)';
+  ctx.beginPath(); ctx.ellipse(0,bh/2+4*sc,bw*0.7,3*sc,0,0,Math.PI*2); ctx.fill();
+
+  // Legs
+  const legSwing = guardState==='grabbing' ? 0 : Math.sin(guardWalkT*8)*0.25;
+  ctx.fillStyle='#1a1a2a';
+  ctx.save(); ctx.translate(-bw*0.2, bh*0.4+walkBob); ctx.rotate(legSwing);
+  ctx.fillRect(-5*sc,0,10*sc,22*sc); ctx.restore();
+  ctx.save(); ctx.translate(bw*0.2, bh*0.4+walkBob); ctx.rotate(-legSwing);
+  ctx.fillRect(-5*sc,0,10*sc,22*sc); ctx.restore();
+
+  // Body — black security uniform
+  ctx.translate(0, walkBob*0.5);
+  const bodyG=ctx.createLinearGradient(-bw/2,-bh/2,bw/2,bh/2);
+  bodyG.addColorStop(0,'#2a2a3a'); bodyG.addColorStop(0.5,'#1a1a28'); bodyG.addColorStop(1,'#111120');
+  ctx.fillStyle=bodyG;
+  ctx.beginPath(); ctx.roundRect(-bw/2,-bh/2,bw,bh,[4*sc,4*sc,2*sc,2*sc]); ctx.fill();
+
+  // Badge
+  ctx.fillStyle='#f0c040';
+  ctx.beginPath(); ctx.roundRect(-5*sc,-bh*0.28,10*sc,7*sc,1*sc); ctx.fill();
+  ctx.fillStyle='#1a1a28'; ctx.font=`bold ${5*sc}px Arial`; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('SEC',-1*sc,-bh*0.245);
+
+  // Arms — grabbing pose
+  ctx.fillStyle='#2a2a3a';
+  if(guardState==='grabbing'){
+    // 両腕を前に伸ばす
+    ctx.save(); ctx.translate(-bw/2-2*sc,-bh*0.15); ctx.rotate(-0.8);
+    ctx.fillRect(-5*sc,0,10*sc,28*sc); ctx.restore();
+    ctx.save(); ctx.translate(bw/2+2*sc,-bh*0.15); ctx.rotate(0.8);
+    ctx.fillRect(-5*sc,0,10*sc,28*sc); ctx.restore();
+  } else {
+    const as=Math.sin(guardWalkT*8)*0.3;
+    ctx.save(); ctx.translate(-bw/2-2*sc,-bh*0.15); ctx.rotate(as-0.2);
+    ctx.fillRect(-5*sc,0,10*sc,26*sc); ctx.restore();
+    ctx.save(); ctx.translate(bw/2+2*sc,-bh*0.15); ctx.rotate(-as+0.2);
+    ctx.fillRect(-5*sc,0,10*sc,26*sc); ctx.restore();
+  }
+
+  // Head
+  const hg=ctx.createRadialGradient(-3*sc,-bh/2-hr*0.9,1*sc,0,-bh/2-hr*0.85,hr);
+  hg.addColorStop(0,'#f0d0b0'); hg.addColorStop(1,'#c09070');
+  ctx.fillStyle=hg;
+  ctx.beginPath(); ctx.ellipse(0,-bh/2-hr*0.85,hr,hr*1.05,0,0,Math.PI*2); ctx.fill();
+
+  // Hat
+  ctx.fillStyle='#1a1a28';
+  ctx.fillRect(-hr*1.1,-bh/2-hr*1.9,hr*2.2,6*sc); // brim
+  ctx.beginPath(); ctx.roundRect(-hr*0.75,-bh/2-hr*2.5,hr*1.5,hr*0.7,[3*sc]); ctx.fill(); // cap
+
+  // Eyes — stern look
+  ctx.fillStyle='#222';
+  ctx.beginPath(); ctx.ellipse(-hr*0.3,-bh/2-hr*0.82,3*sc,2.5*sc,0,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(hr*0.3,-bh/2-hr*0.82,3*sc,2.5*sc,0,0,Math.PI*2); ctx.fill();
+  // Frown
+  ctx.strokeStyle='#a06040'; ctx.lineWidth=1.5*sc; ctx.lineCap='round';
+  ctx.beginPath();
+  ctx.moveTo(-5*sc,-bh/2-hr*0.6);
+  ctx.quadraticCurveTo(0,-bh/2-hr*0.68,5*sc,-bh/2-hr*0.6); ctx.stroke();
+
+  ctx.globalAlpha=1; ctx.restore();
+
+  // Warning speech bubble
+  if (guardState==='warning' || (guardState==='approaching' && guardWalkT<1)) {
+    ctx.save();
+    const bx=x-50*sc, by2=y-80*sc;
+    ctx.fillStyle='rgba(255,60,60,0.92)';
+    ctx.beginPath(); ctx.roundRect(bx,by2,96*sc,30*sc,6*sc); ctx.fill();
+    // Tail
+    ctx.beginPath(); ctx.moveTo(bx+70*sc,by2+30*sc); ctx.lineTo(bx+80*sc,by2+42*sc); ctx.lineTo(bx+60*sc,by2+30*sc); ctx.fill();
+    ctx.fillStyle='#fff'; ctx.font=`bold ${11*sc}px 'Noto Sans JP',sans-serif`;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('やめろ！🚨',bx+48*sc,by2+15*sc);
+    ctx.restore();
+  }
+  if (guardState==='grabbing') {
+    ctx.save();
+    const bx=x-55*sc, by2=y-80*sc;
+    ctx.fillStyle='rgba(200,20,20,0.92)';
+    ctx.beginPath(); ctx.roundRect(bx,by2,110*sc,30*sc,6*sc); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(bx+75*sc,by2+30*sc); ctx.lineTo(bx+85*sc,by2+42*sc); ctx.lineTo(bx+65*sc,by2+30*sc); ctx.fill();
+    ctx.fillStyle='#fff'; ctx.font=`bold ${11*sc}px 'Noto Sans JP',sans-serif`;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(`-50pt/秒 💢`,bx+55*sc,by2+15*sc);
+    ctx.restore();
+  }
+}
+
 // ── HIT DETECTION ────────────────────────────────────
 let holdScoreAccum = 0;
 function checkHit(dt) {
-  if(laserX<-900){ holdScoreAccum=0; return; }
+  if(laserX<-900){ holdScoreAccum=0; return false; }
   const sc=Math.min(W,H)/380;
   const headR=18*sc, bodyH=48*sc;
   const eyeX=gkX, eyeY=gkY-bodyH/2-headR*0.88;
@@ -750,7 +948,6 @@ function checkHit(dt) {
 
   if(dist<headR*1.3){
     if(!gkDazzled){
-      // 初接触 — コンボ＆ダメージ
       gkDazzled=true; dazzleT=1.9;
       combo++; maxCombo=Math.max(maxCombo,combo);
       const pts=10*combo; score+=pts;
@@ -762,7 +959,6 @@ function checkHit(dt) {
       clearTimeout(comboPop._t);
       comboPop._t=setTimeout(()=>comboPop.style.opacity='0',700);
     } else {
-      // 照射継続中 — 40pt/秒を加算、dazzleをリセット延長
       holdScoreAccum += 40 * dt;
       dazzleT = Math.max(dazzleT, 0.35);
       if(holdScoreAccum >= 1){
@@ -772,8 +968,10 @@ function checkHit(dt) {
         scoreEl.textContent = score;
       }
     }
+    return true;
   } else {
     combo=0; comboEl.textContent=0; holdScoreAccum=0;
+    return false;
   }
 }
 
@@ -783,8 +981,10 @@ function loop(ts){
   if(!playing) return;
   const dt=Math.min((ts-lastT)/1000,0.1); lastT=ts;
   ctx.clearRect(0,0,W,H);
-  drawStadium(); drawLaserBeam(); drawGK(); drawBall();
-  updateGK(dt); updateBall(dt); checkHit(dt);
+  drawStadium(); drawLaserBeam(); drawGK(); drawBall(); drawGuard();
+  updateGK(dt); updateBall(dt);
+  const isHitting = checkHit(dt);
+  updateGuard(dt, isHitting);
   animFrame=requestAnimationFrame(loop);
 }
 
@@ -807,7 +1007,7 @@ function startGame(){
   gkPanicVX=0; gkPanicT=0;
   scoreEl.textContent='0'; comboEl.textContent='0';
   overlay.style.display='none'; laserDot.style.display='none';
-  playing=true; initBall(); startTimer(); lastT=performance.now();
+  playing=true; initBall(); initGuard(); startTimer(); lastT=performance.now();
   animFrame=requestAnimationFrame(loop);
 }
 
